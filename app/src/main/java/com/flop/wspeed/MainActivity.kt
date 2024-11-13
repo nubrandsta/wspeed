@@ -1,29 +1,32 @@
 package com.flop.wspeed
 
+import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Rect
+import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.PI
 
 class MainActivity : AppCompatActivity() {
+
     private lateinit var cameraExecutor: ExecutorService
     private var previousFrame: Bitmap? = null
-    private val roi = Rect(100, 100, 200, 200) // Example ROI
-    private val numBlades = 3 // Example number of blades
+    private val pixelDiffs = mutableListOf<Double>()
+    private val peakFrames = mutableListOf<Int>()
+    private var frameNumber = 0
+    private val fps = 30  // Set your actual video FPS
+    private val bladeCount = 3  // Adjust based on the number of fan blades
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,14 +60,14 @@ class MainActivity : AppCompatActivity() {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
-                it.setAnalyzer(cameraExecutor, RPMAnalyzer(numBlades))
+                it.setAnalyzer(cameraExecutor, FrameAnalyzer())
             }
 
         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
         try {
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
+            cameraProvider.bindToLifecycle(this as LifecycleOwner, cameraSelector, preview, imageAnalyzer)
         } catch (exc: Exception) {
             Log.e(TAG, "Use case binding failed", exc)
         }
@@ -83,5 +86,51 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "CameraXApp"
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
+    }
+
+    inner class FrameAnalyzer : ImageAnalysis.Analyzer {
+        override fun analyze(image: ImageProxy) {
+            val bitmap = image.toBitmap()
+            val currentFrame = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height)
+
+            // Convert frame to grayscale
+            val grayscaleFrame = Bitmap.createBitmap(currentFrame.width, currentFrame.height, Bitmap.Config.ARGB_8888)
+            for (x in 0 until currentFrame.width) {
+                for (y in 0 until currentFrame.height) {
+                    val pixel = currentFrame.getPixel(x, y)
+                    val gray = (Color.red(pixel) + Color.green(pixel) + Color.blue(pixel)) / 3
+                    grayscaleFrame.setPixel(x, y, Color.rgb(gray, gray, gray))
+                }
+            }
+
+            // Set up the ROI
+            val xFraction = 0.7
+            val yFraction = 0.7
+            val widthFraction = 0.01
+            val heightFraction = 0.01
+
+            val roiX = (xFraction * grayscaleFrame.width).toInt()
+            val roiY = (yFraction * grayscaleFrame.height).toInt()
+            val roiWidth = (widthFraction * grayscaleFrame.width).toInt()
+            val roiHeight = (heightFraction * grayscaleFrame.height).toInt()
+
+            // Calculate pixel intensity differences
+            val pixelIntensities = mutableListOf<Double>()
+            for (x in roiX until roiX + roiWidth) {
+                for (y in roiY until roiY + roiHeight) {
+                    val currentPixel = grayscaleFrame.getPixel(x, y)
+                    pixelIntensities.add(Color.red(currentPixel).toDouble())
+                }
+            }
+
+            // Update the overlay with the new pixel intensities
+            findViewById<GraphOverlayView>(R.id.graph_overlay).updatePixelIntensities(pixelIntensities)
+
+            // Update previous frame and increment frame number
+            previousFrame = grayscaleFrame
+            frameNumber++
+
+            image.close()
+        }
     }
 }
